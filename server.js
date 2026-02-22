@@ -11,6 +11,13 @@ const rawOrigins = process.env.ALLOWED_ORIGINS || 'http://localhost:5173';
 const ALLOWED_ORIGINS = rawOrigins === '*' ? '*' : rawOrigins.split(',').map((o) => o.trim());
 
 // ---------------------------------------------------------------------------
+// Protocol constants
+// ---------------------------------------------------------------------------
+const PROTOCOL_VERSION = 1;
+const MAX_MSG_BYTES = 8192; // 8 KB per message
+const VALID_TYPES = ['cmd', 'res', 'event', 'err'];
+
+// ---------------------------------------------------------------------------
 // Express + HTTP server
 // ---------------------------------------------------------------------------
 const app = express();
@@ -22,7 +29,11 @@ const httpServer = createServer(app);
 // ---------------------------------------------------------------------------
 // In-memory session store  (ephemeral — no DB)
 // Map<clientId, SessionInfo>
-// SessionInfo: { adminSocketId, clientSocketId, status, startedAt }
+// SessionInfo: {
+//   adminSocketId, clientSocketId,
+//   status: 'waiting' | 'active' | 'ended',
+//   startedAt, adminLastSeen, clientLastSeen
+// }
 // ---------------------------------------------------------------------------
 const sessions = new Map();
 
@@ -38,16 +49,71 @@ function verifyToken(token) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper — validate protocol envelope
+// Returns null if valid, or an error string describing the problem.
+// ---------------------------------------------------------------------------
+function validateEnvelope(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return 'Payload must be a JSON object';
+  }
+  if (data.v !== PROTOCOL_VERSION) {
+    return `Unsupported protocol version: ${data.v} (expected ${PROTOCOL_VERSION})`;
+  }
+  if (!data.id || typeof data.id !== 'string' || data.id.length === 0 || data.id.length > 128) {
+    return 'Field "id" must be a non-empty string (max 128 chars)';
+  }
+  if (!VALID_TYPES.includes(data.type)) {
+    return `Field "type" must be one of: ${VALID_TYPES.join(', ')}`;
+  }
+  if (typeof data.ts !== 'number' || data.ts <= 0) {
+    return 'Field "ts" must be a positive number (Unix ms)';
+  }
+  if (data.payload === undefined || data.payload === null || typeof data.payload !== 'object') {
+    return 'Field "payload" must be a JSON object';
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Helper — build a server-originated error envelope
+// ---------------------------------------------------------------------------
+function serverError(id, code, message) {
+  return {
+    v: PROTOCOL_VERSION,
+    id: id || 'unknown',
+    type: 'err',
+    ts: Date.now(),
+    from: 'server',
+    payload: { code, message },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // HTTP endpoints
 // ---------------------------------------------------------------------------
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, sessions: sessions.size });
+  const sessionList = [];
+  sessions.forEach((s, clientId) => {
+    sessionList.push({
+      clientId,
+      status: s.status,
+      startedAt: s.startedAt,
+      adminLastSeen: s.adminLastSeen || null,
+      clientLastSeen: s.clientLastSeen || null,
+    });
+  });
+  res.json({ ok: true, sessions: sessions.size, sessionList });
 });
 
 app.get('/session/:clientId/status', (req, res) => {
   const session = sessions.get(req.params.clientId);
   if (!session) return res.json({ status: 'none' });
-  res.json({ status: session.status, startedAt: session.startedAt });
+  res.json({
+    status: session.status,
+    startedAt: session.startedAt,
+    adminLastSeen: session.adminLastSeen || null,
+    clientLastSeen: session.clientLastSeen || null,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -79,8 +145,7 @@ io.use((socket, next) => {
     socket.adminName = payload.username || 'Admin';
   }
 
-  // Client connections: the token is validated separately (later phase)
-  // For now, clients are trusted via a simple shared secret check
+  // Client connections use the shared secret
   if (role === 'client') {
     if (token !== JWT_SECRET) {
       return next(new Error('Invalid client token'));
@@ -106,7 +171,6 @@ io.on('connection', (socket) => {
   if (role === 'admin') {
     const existing = sessions.get(clientId);
 
-    // Allow admin to rejoin an existing session (e.g. page refresh)
     if (existing && existing.status !== 'ended') {
       existing.adminSocketId = socket.id;
       socket.emit('session:status', { status: existing.status });
@@ -116,11 +180,12 @@ io.on('connection', (socket) => {
         clientSocketId: null,
         status: 'waiting',
         startedAt: Date.now(),
+        adminLastSeen: Date.now(),
+        clientLastSeen: null,
       });
       socket.emit('session:status', { status: 'waiting' });
     }
 
-    // Notify admin if client is already in the room (rare but possible)
     const session = sessions.get(clientId);
     if (session.clientSocketId) {
       session.status = 'active';
@@ -135,34 +200,57 @@ io.on('connection', (socket) => {
     const session = sessions.get(clientId);
 
     if (!session) {
-      // No admin has opened a session yet — client waits too
       sessions.set(clientId, {
         adminSocketId: null,
         clientSocketId: socket.id,
         status: 'waiting',
         startedAt: Date.now(),
+        adminLastSeen: null,
+        clientLastSeen: Date.now(),
       });
       socket.emit('session:waiting');
     } else {
       session.clientSocketId = socket.id;
+      session.clientLastSeen = Date.now();
       session.status = 'active';
-      // Notify both sides
       io.to(room).emit('session:active');
     }
   }
 
-  // ── Message relay ─────────────────────────────────────────────────────────
-  socket.on('message', (data) => {
+  // ── Structured message relay ───────────────────────────────────────────────
+  socket.on('message', (rawData) => {
     const session = sessions.get(clientId);
-    if (!session || session.status !== 'active') return;
 
-    const payload = {
-      from: role,
-      text: String(data.text || '').slice(0, 2000), // cap length
-      timestamp: Date.now(),
-    };
+    if (!session || session.status !== 'active') {
+      socket.emit('message', serverError(rawData?.id, 'SESSION_NOT_ACTIVE', 'No active session to relay to'));
+      return;
+    }
 
-    io.to(room).emit('message', payload);
+    // Size guard (JSON.stringify is the cheapest approximation)
+    let msgStr;
+    try { msgStr = JSON.stringify(rawData); } catch (_) { msgStr = ''; }
+    if (msgStr.length > MAX_MSG_BYTES) {
+      socket.emit('message', serverError(rawData?.id, 'MSG_TOO_LARGE', `Message exceeds ${MAX_MSG_BYTES} byte limit`));
+      return;
+    }
+
+    // Envelope validation
+    const validationErr = validateEnvelope(rawData);
+    if (validationErr) {
+      socket.emit('message', serverError(rawData?.id, 'INVALID_ENVELOPE', validationErr));
+      return;
+    }
+
+    // Update last-seen timestamp
+    if (role === 'client') session.clientLastSeen = Date.now();
+    else session.adminLastSeen = Date.now();
+
+    // Relay to the other side only (exclude sender)
+    const relayed = { ...rawData, from: role, relayedAt: Date.now() };
+    socket.to(room).emit('message', relayed);
+
+    const sub = rawData.payload?.cmd || rawData.payload?.name || '';
+    console.log(`[relay] ${role} → type=${rawData.type}${sub ? '/' + sub : ''} id=${rawData.id}`);
   });
 
   // ── End session ───────────────────────────────────────────────────────────
@@ -177,10 +265,8 @@ io.on('connection', (socket) => {
     if (!session) return;
 
     if (role === 'admin') {
-      // Admin disconnected — end the session immediately
       endSession(clientId, room, 'admin_disconnect');
     } else {
-      // Client disconnected — notify admin but keep session alive briefly
       session.clientSocketId = null;
       session.status = 'waiting';
       io.to(room).emit('session:client_disconnected');
@@ -202,5 +288,7 @@ function endSession(clientId, room, reason) {
 // ---------------------------------------------------------------------------
 httpServer.listen(PORT, () => {
   console.log(`iFilter Socket Server running on port ${PORT}`);
+  console.log(`Protocol version: ${PROTOCOL_VERSION}`);
+  console.log(`Max message size: ${MAX_MSG_BYTES} bytes`);
   console.log(`Allowed origins: ${Array.isArray(ALLOWED_ORIGINS) ? ALLOWED_ORIGINS.join(', ') : ALLOWED_ORIGINS}`);
 });
