@@ -7,9 +7,8 @@ const cors = require('cors');
 
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'iFilter_Secret_Key_2025';
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
-  .split(',')
-  .map((o) => o.trim());
+const rawOrigins = process.env.ALLOWED_ORIGINS || 'http://localhost:5173';
+const ALLOWED_ORIGINS = rawOrigins === '*' ? '*' : rawOrigins.split(',').map((o) => o.trim());
 
 // ---------------------------------------------------------------------------
 // Express + HTTP server
