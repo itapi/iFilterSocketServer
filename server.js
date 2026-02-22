@@ -202,5 +202,5 @@ function endSession(clientId, room, reason) {
 // ---------------------------------------------------------------------------
 httpServer.listen(PORT, () => {
   console.log(`iFilter Socket Server running on port ${PORT}`);
-  console.log(`Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+  console.log(`Allowed origins: ${Array.isArray(ALLOWED_ORIGINS) ? ALLOWED_ORIGINS.join(', ') : ALLOWED_ORIGINS}`);
 });
