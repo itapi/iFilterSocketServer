@@ -152,7 +152,7 @@ io.use((socket, next) => {
     }
   }
 
-  socket.clientId = clientId;
+  socket.clientId = String(clientId); // normalize — JS may send number, Android always sends string
   socket.role = role;
   next();
 });
