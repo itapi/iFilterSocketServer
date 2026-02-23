@@ -233,13 +233,24 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Size guard (JSON.stringify is the cheapest approximation)
-    let msgStr;
-    try { msgStr = JSON.stringify(rawData); } catch (_) { msgStr = ''; }
-    if (msgStr.length > MAX_MSG_BYTES) {
-      socket.emit('message', serverError(rawData?.id, 'MSG_TOO_LARGE', `Message exceeds ${MAX_MSG_BYTES} byte limit`));
-      return;
-    }
+ // Size guard (true UTF-8 byte size)
+let msgStr;
+try {
+  msgStr = JSON.stringify(rawData);
+} catch (_) {
+  msgStr = '';
+}
+
+const msgSizeBytes = Buffer.byteLength(msgStr, 'utf8');
+
+if (msgSizeBytes > MAX_MSG_BYTES) {
+  console.log(
+    `[size-blocked] role=${role} id=${rawData?.id} size=${msgSizeBytes} limit=${MAX_MSG_BYTES}`
+  );
+
+  socket.emit('message', serverError(rawData?.id,'MSG_TOO_LARGE',`Message exceeds ${MAX_MSG_BYTES} byte limit. Actual size: ${msgSizeBytes} bytes`));
+  return;
+}
 
     // Envelope validation
     const validationErr = validateEnvelope(rawData);
