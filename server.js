@@ -15,7 +15,7 @@ const ALLOWED_ORIGINS = rawOrigins === '*' ? '*' : rawOrigins.split(',').map((o)
 // ---------------------------------------------------------------------------
 const PROTOCOL_VERSION = 1;
 const MAX_MSG_BYTES = 8192; // 8 KB per message
-const VALID_TYPES = ['cmd', 'res', 'event', 'err'];
+const VALID_TYPES = ['cmd', 'res', 'event', 'err', 'stream'];
 
 // ---------------------------------------------------------------------------
 // Express + HTTP server
