@@ -189,8 +189,11 @@ io.on('connection', (socket) => {
     const session = sessions.get(clientId);
     if (session.clientSocketId) {
       session.status = 'active';
+      const members = io.sockets.adapter.rooms.get(room);
+      console.log(`[session:active] admin-triggered | room=${room} | members=[${members ? [...members].join(', ') : 'EMPTY'}]`);
       io.to(room).emit('session:active');
     } else {
+      console.log(`[session:waiting] admin waiting | room=${room} | no client yet`);
       socket.emit('session:waiting');
     }
   }
@@ -198,6 +201,7 @@ io.on('connection', (socket) => {
   // ── Client joined ─────────────────────────────────────────────────────────
   if (role === 'client') {
     const session = sessions.get(clientId);
+    console.log(`[client-join] session exists=${!!session} | existing clientSocketId=${session?.clientSocketId || 'none'}`);
 
     if (!session) {
       sessions.set(clientId, {
@@ -208,11 +212,14 @@ io.on('connection', (socket) => {
         adminLastSeen: null,
         clientLastSeen: Date.now(),
       });
+      console.log(`[session:waiting] client waiting | room=${room} | no admin session yet`);
       socket.emit('session:waiting');
     } else {
       session.clientSocketId = socket.id;
       session.clientLastSeen = Date.now();
       session.status = 'active';
+      const members = io.sockets.adapter.rooms.get(room);
+      console.log(`[session:active] client-triggered | room=${room} | members=[${members ? [...members].join(', ') : 'EMPTY'}] | adminSocketId=${session.adminSocketId}`);
       io.to(room).emit('session:active');
     }
   }
