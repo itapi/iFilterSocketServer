@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const { WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 
@@ -300,6 +301,104 @@ function endSession(clientId, room, reason) {
   sessions.delete(clientId);
   console.log(`[session:ended] clientId=${clientId} reason=${reason}`);
 }
+
+// ---------------------------------------------------------------------------
+// Screen relay  (/screen  — raw binary WebSocket, no JSON parsing)
+//
+// Both sides connect with query params:
+//   ?clientId=<id>&token=<token>&role=source   (Android device)
+//   ?clientId=<id>&token=<jwt>&role=sink       (admin dashboard)
+//
+// Binary frame format (produced by ScreenStreamManager.java):
+//   [0]     0x00 = SPS/PPS config,  0x01 = H.264 video frame
+//   [1..4]  payload size (uint32, big-endian)
+//   [5..]   raw H.264 NAL bytes
+//
+// The server is a pure passthrough relay: it never inspects the binary payload,
+// it just forwards every Buffer from source → sink.
+// ---------------------------------------------------------------------------
+const screenSessions = new Map();
+// Map<clientId, { source: WebSocket | null, sink: WebSocket | null }>
+
+const screenWss = new WebSocketServer({ server: httpServer, path: '/screen' });
+
+screenWss.on('connection', (ws, req) => {
+  // Parse query params from the upgrade URL
+  let params;
+  try {
+    params = new URL(req.url, 'ws://localhost').searchParams;
+  } catch {
+    ws.close(1008, 'Bad request URL');
+    return;
+  }
+
+  const clientId = params.get('clientId');
+  const token    = params.get('token');
+  const role     = params.get('role'); // 'source' or 'sink'
+
+  // ── Auth ────────────────────────────────────────────────────────────────
+  if (!clientId || !token || !role) {
+    ws.close(1008, 'Missing clientId, token, or role');
+    return;
+  }
+  if (!['source', 'sink'].includes(role)) {
+    ws.close(1008, 'role must be source or sink');
+    return;
+  }
+
+  if (role === 'source') {
+    // Device authenticates with the shared secret
+    if (token !== JWT_SECRET) {
+      ws.close(1008, 'Invalid client token');
+      return;
+    }
+  } else {
+    // Admin authenticates with a dashboard JWT
+    if (!verifyToken(token)) {
+      ws.close(1008, 'Invalid or expired admin token');
+      return;
+    }
+  }
+
+  // ── Session bookkeeping ─────────────────────────────────────────────────
+  if (!screenSessions.has(clientId)) {
+    screenSessions.set(clientId, { source: null, sink: null });
+  }
+  const session = screenSessions.get(clientId);
+  session[role] = ws;
+
+  console.log(`[screen] ${role} connected | clientId=${clientId}`);
+
+  // ── Binary relay ────────────────────────────────────────────────────────
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) return; // we only forward binary frames
+
+    const target = role === 'source' ? session.sink : session.source;
+    if (target && target.readyState === target.OPEN) {
+      target.send(data, { binary: true });
+    }
+    // Drop silently if the other side isn't connected yet — device just
+    // keeps streaming and the sink will catch up on its next keyframe.
+  });
+
+  // ── Cleanup ─────────────────────────────────────────────────────────────
+  ws.on('close', (code, reason) => {
+    console.log(`[screen] ${role} disconnected | clientId=${clientId} code=${code}`);
+    const s = screenSessions.get(clientId);
+    if (!s) return;
+
+    s[role] = null;
+
+    // Remove the session entry once both sides have disconnected
+    if (s.source === null && s.sink === null) {
+      screenSessions.delete(clientId);
+    }
+  });
+
+  ws.on('error', (err) => {
+    console.error(`[screen] ${role} error | clientId=${clientId}:`, err.message);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Start
