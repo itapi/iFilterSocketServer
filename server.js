@@ -322,20 +322,25 @@ const screenSessions = new Map();
 
 const screenWss = new WebSocketServer({ noServer: true });
 
-// Manually route /screen upgrade requests to screenWss.
-// Using noServer:true avoids the known conflict between ws and Socket.IO
-// when both attach to the same httpServer: ws v8 calls abortHandshake(400)
-// for paths that don't match, destroying the socket before Socket.IO can
-// handle its own /socket.io/ upgrades — causing "Invalid frame header".
+// Socket.IO (engine.io) registers its own 'upgrade' listener on httpServer
+// when `new Server(httpServer)` is called above.  Engine.io's handler calls
+// abortUpgrade() — destroying the socket — for ANY path that doesn't match
+// '/socket.io/'.  This means a /screen upgrade is killed before our handler
+// can fire if we just use httpServer.on('upgrade', ...).
+//
+// Fix: remove ALL existing upgrade listeners, then add a single router that
+// explicitly handles /screen and delegates everything else to engine.io.
+httpServer.removeAllListeners('upgrade');
 httpServer.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
   if (pathname === '/screen') {
     screenWss.handleUpgrade(request, socket, head, (ws) => {
       screenWss.emit('connection', ws, request);
     });
+  } else {
+    // Hand off to engine.io (Socket.IO's WebSocket transport)
+    io.engine.handleUpgrade(request, socket, head);
   }
-  // All other paths (Socket.IO at /socket.io/) are handled by Socket.IO's
-  // own upgrade listener — we intentionally don't touch them here.
 });
 
 screenWss.on('connection', (ws, req) => {
