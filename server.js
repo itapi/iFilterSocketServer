@@ -320,7 +320,23 @@ function endSession(clientId, room, reason) {
 const screenSessions = new Map();
 // Map<clientId, { source: WebSocket | null, sink: WebSocket | null }>
 
-const screenWss = new WebSocketServer({ server: httpServer, path: '/screen' });
+const screenWss = new WebSocketServer({ noServer: true });
+
+// Manually route /screen upgrade requests to screenWss.
+// Using noServer:true avoids the known conflict between ws and Socket.IO
+// when both attach to the same httpServer: ws v8 calls abortHandshake(400)
+// for paths that don't match, destroying the socket before Socket.IO can
+// handle its own /socket.io/ upgrades — causing "Invalid frame header".
+httpServer.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url, 'http://localhost').pathname;
+  if (pathname === '/screen') {
+    screenWss.handleUpgrade(request, socket, head, (ws) => {
+      screenWss.emit('connection', ws, request);
+    });
+  }
+  // All other paths (Socket.IO at /socket.io/) are handled by Socket.IO's
+  // own upgrade listener — we intentionally don't touch them here.
+});
 
 screenWss.on('connection', (ws, req) => {
   // Parse query params from the upgrade URL
