@@ -383,23 +383,35 @@ screenWss.on('connection', (ws, req) => {
 
   // ── Session bookkeeping ─────────────────────────────────────────────────
   if (!screenSessions.has(clientId)) {
-    screenSessions.set(clientId, { source: null, sink: null });
+    screenSessions.set(clientId, { source: null, sink: null, frameCount: 0, droppedCount: 0 });
   }
   const session = screenSessions.get(clientId);
   session[role] = ws;
 
-  console.log(`[screen] ${role} connected | clientId=${clientId}`);
+  console.log(`[screen] ${role} connected | clientId=${clientId} | source=${!!session.source} sink=${!!session.sink}`);
 
   // ── Binary relay ────────────────────────────────────────────────────────
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return; // we only forward binary frames
 
+    const frameType = data[0] === 0x00 ? 'CONFIG' : 'VIDEO';
+    const frameSize = data.length;
+    session.frameCount++;
+
     const target = role === 'source' ? session.sink : session.source;
     if (target && target.readyState === target.OPEN) {
       target.send(data, { binary: true });
+      // Log every 100 frames to avoid flooding at 30 fps
+      if (session.frameCount % 100 === 0 || frameType === 'CONFIG') {
+        console.log(`[screen] relay | clientId=${clientId} type=${frameType} size=${frameSize}B total=${session.frameCount} dropped=${session.droppedCount}`);
+      }
+    } else {
+      session.droppedCount++;
+      // Always log dropped CONFIG frames and first few drops so it's easy to spot missing sink
+      if (frameType === 'CONFIG' || session.droppedCount <= 5 || session.droppedCount % 100 === 0) {
+        console.warn(`[screen] DROP | clientId=${clientId} type=${frameType} size=${frameSize}B — sink not connected (dropped=${session.droppedCount})`);
+      }
     }
-    // Drop silently if the other side isn't connected yet — device just
-    // keeps streaming and the sink will catch up on its next keyframe.
   });
 
   // ── Cleanup ─────────────────────────────────────────────────────────────
