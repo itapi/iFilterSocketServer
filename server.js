@@ -320,7 +320,7 @@ function endSession(clientId, room, reason) {
 const screenSessions = new Map();
 // Map<clientId, { source: WebSocket | null, sink: WebSocket | null }>
 
-const screenWss = new WebSocketServer({ noServer: true });
+const screenWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 
 // Socket.IO (engine.io) registers its own 'upgrade' listener on httpServer
 // when `new Server(httpServer)` is called above.  Engine.io's handler calls
