@@ -400,7 +400,25 @@ screenWss.on('connection', (ws, req) => {
 
     const target = role === 'source' ? session.sink : session.source;
     if (target && target.readyState === target.OPEN) {
+      
+      // --- NEW: Backpressure protection ---
+      // If we are relaying FROM Android TO Browser, check the Browser's buffer
+      if (role === 'source') {
+        // If the browser has more than 256KB waiting to be sent, drop the frame
+        if (target.bufferedAmount > 256 * 1024) {
+          session.droppedCount++;
+          
+          // Log occasionally so you can monitor if viewers have bad connections
+          if (session.droppedCount % 100 === 0) {
+            console.warn(`[screen] BACKPRESSURE DROP | clientId=${clientId} buffered=${target.bufferedAmount}B (dropped=${session.droppedCount})`);
+          }
+          return; // Drop the frame to let the viewer catch up
+        }
+      }
+      // ------------------------------------
+
       target.send(data, { binary: true });
+      
       // Log every 100 frames to avoid flooding at 30 fps
       if (session.frameCount % 100 === 0 || frameType === 'CONFIG') {
         console.log(`[screen] relay | clientId=${clientId} type=${frameType} size=${frameSize}B total=${session.frameCount} dropped=${session.droppedCount}`);
