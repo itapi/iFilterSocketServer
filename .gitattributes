@@ -1,0 +1,20 @@
+# Line endings are normative in this repo, not a checkout detail.
+#
+# deploy/deploy.ps1 scp's deploy/remote-deploy.sh straight from the WORKING COPY,
+# so on a machine with core.autocrlf=true a CRLF checkout hands bash a shebang
+# ending in \r. That is unrunnable, and it is exactly how iFilter's
+# public/scripts/amos.sh and the iShield installer's deploy broke. The rule lives
+# here rather than in anyone's git config because no other checkout inherits a
+# git config.
+#
+# remote-deploy.sh also refuses a tree with CRLF in .sh/.js/.json/.conf, so a
+# regression here fails the deploy rather than reaching the server.
+
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
