@@ -149,21 +149,21 @@ PORT=$(sed -n "s/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*//p" "$APP_DIR/.env" 
 PORT=${PORT:-3001}
 
 sleep 2
-local_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PORT/health" || echo 000)
+local_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PORT/health" || true)
 if [ "$local_code" != "200" ]; then
   echo "SMOKE TEST FAILED: 127.0.0.1:$PORT/health returned $local_code -- rolling back" >&2
   rm -rf "${APP_DIR:?}"/*
   tar -xzf "$BACKUP" -C "$(dirname "$APP_DIR")"
   pm2 reload "$PM2_APP" --update-env >/dev/null 2>&1 || true
   sleep 2
-  after=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PORT/health" || echo 000)
+  after=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$PORT/health" || true)
   echo "rolled back to $BACKUP; local /health now returns $after" >&2
   exit 1
 fi
 log "smoke local : 127.0.0.1:$PORT/health -> 200"
 
 if [ -n "$SMOKE_URL" ]; then
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$SMOKE_URL" || echo 000)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$SMOKE_URL" || true)
   if [ "$code" = "200" ]; then
     log "smoke public: $SMOKE_URL -> 200"
   else
