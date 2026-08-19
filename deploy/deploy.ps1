@@ -8,11 +8,13 @@
   their (gitignored, server-side) .env: instance name, port, JWT secret and CORS
   origins.
 
-  They cannot be one process. `sessions` and `screenSessions` are keyed on
-  clientId alone, and clientId is `client_unique_id`, an int(11) from each
-  product's own clients table -- both sequences start at 1, so iShield client 42
-  and iFilter client 42 would share the room `session:42`. The screen relay is a
-  blind passthrough with no product check.
+  They cannot be one process. JWT_SECRET is one constant per process, used both
+  to verify admin JWTs and as the literal device token, and the two dashboards
+  sign with different secrets -- so sharing would mean merging the two products'
+  admin auth domains. Session namespace is a second, weaker reason: sessions are
+  keyed on clientId alone and the relay has no product check, though
+  client_unique_id is a random ~9-digit int rather than a sequence, with
+  measured overlap 0 on 2026-08-19.
 
   Ships `git archive <ref>` -- the committed tree, not the working copy. Two
   consequences worth knowing:

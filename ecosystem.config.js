@@ -1,18 +1,21 @@
 // PM2 process definition.
 //
 // ONE codebase, TWO running instances — iFilter and iShield each get their own
-// process, port, checkout and .env. They cannot share a process: `sessions` and
-// `screenSessions` in server.js are keyed on clientId alone, and clientId is
-// `client_unique_id`, an int(11) drawn from each product's own clients table.
-// Both sequences start at 1, so iShield client 42 and iFilter client 42 would
-// land in the same room — `session:42` — and the screen relay is a blind
-// passthrough with no product check. An iShield device's screen would stream to
-// an iFilter admin.
+// process, port, checkout and .env.
 //
-// The second reason is auth: JWT_SECRET is a single module-level constant used
-// both to verify admin JWTs and as the literal device token, and the two
+// The load-bearing reason is auth: JWT_SECRET is a single module-level constant
+// used both to verify admin JWTs and as the literal device token, and the two
 // products sign with different secrets (iFilter_Secret_Key_2025 vs
-// iShield_Secret_Key_2025). One process can only hold one.
+// iShield_Secret_Key_2025). One process holds one, so sharing would mean
+// unifying them — which merges the two products' admin auth domains.
+//
+// Session namespace is the second reason. `sessions` and `screenSessions` are
+// keyed on clientId alone, and the room is `session:${clientId}`. clientId is
+// `client_unique_id`, which is NOT an auto-increment: both products draw a
+// random ~9-digit int, and measured overlap on 2026-08-19 was 0 across 97
+// iFilter and 17 iShield clients. So a collision is unlikely rather than
+// impossible — but the relay forwards source→sink with no product check, so if
+// two ever did collide, one product's device would stream to the other's admin.
 //
 // So everything that differs between instances is environment. server.js reads
 // it with dotenv; this file cannot, because PM2 evaluates it and `pm2 start`

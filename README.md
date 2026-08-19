@@ -19,26 +19,46 @@ against that path, and renaming it orphans the entry `pm2 save` restores on boot
 
 ## Why they cannot be one process
 
-Two independent reasons, either one sufficient:
+**One process holds one `JWT_SECRET`, and this is the decisive one.** It is used
+both to verify admin/sink JWTs and as the literal device token
+(`token !== JWT_SECRET`, `server.js:151`), and the two dashboards sign with
+different secrets — `iFilter_Secret_Key_2025` (hardcoded in `AuthMiddleware.php`)
+versus `iShield_Secret_Key_2025` (resolved by the iShield dashboard's
+`auth-secret.php`). A single process cannot verify both, so sharing one would
+mean unifying the secrets — which merges the two products' admin auth domains:
+an iFilter admin token would open iShield sessions.
 
-**`clientId` collision is a certainty, not a risk.** `sessions` and
-`screenSessions` are keyed on `clientId` alone, and the room is
-`session:${clientId}` (`server.js:39, 166, 320`). That id is `client_unique_id`,
-an `int(11)` in *both* products' `clients` tables, each with its own sequence
-starting at 1. So iShield client 42 and iFilter client 42 are the same room. The
-screen relay is a blind passthrough — `target.send(data, { binary: true })` at
-`server.js:420` — with no check that source and sink belong to the same product,
-so an iShield device's screen would stream to an iFilter admin.
+Measured on the box, both directions:
 
-The failure shape is the dangerous kind: with 4–5 iShield devices against
-iFilter's ~1,000, it would almost never appear in testing.
+```
+iShield :3002 + iShield secret   ACCEPTED
+iShield :3002 + iFilter secret   REJECTED  close=1008 Invalid client token
+iFilter :3001 + iFilter secret   ACCEPTED
+iFilter :3001 + iShield secret   REJECTED  close=1008 Invalid client token
+```
 
-**One process holds one `JWT_SECRET`.** It is used both to verify admin/sink JWTs
-and as the literal device token (`token !== JWT_SECRET`, `server.js:151`), and
-the two dashboards sign with different secrets — `iFilter_Secret_Key_2025`
-(hardcoded in `AuthMiddleware.php`) versus `iShield_Secret_Key_2025` (resolved by
-the iShield dashboard's `auth-secret.php`). Sharing one would merge the two
-products' admin auth domains.
+**Session-namespace collision is the second reason, and it is a risk rather than
+a certainty.** `sessions` and `screenSessions` are keyed on `clientId` alone, and
+the room is `session:${clientId}` (`server.js:39, 166, 320`). The screen relay is
+a blind passthrough — `target.send(data, { binary: true })` at `server.js:420` —
+with no check that source and sink belong to the same product, so two clients
+sharing an id across products would put one product's device screen in front of
+the other's admin.
+
+How likely that is depends on how the id is generated, and it is worth being
+precise because an earlier version of this file got it wrong. `client_unique_id`
+is **not** an auto-increment. Both products draw a random ~9-digit integer, and
+the measured overlap on 2026-08-19 was **0**, across 97 iFilter and 17 iShield
+clients:
+
+```sql
+SELECT COUNT(*) FROM ifilter.clients f
+  JOIN ishield.clients s ON f.client_unique_id = s.client_unique_id;  -- 0
+```
+
+So a shared process would probably not have collided any time soon. "Probably
+not" is a poor property for a screen-sharing boundary between two products, but
+it is not the reason the processes are split — the auth domain is.
 
 ## Setup
 

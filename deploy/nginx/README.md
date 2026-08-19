@@ -16,15 +16,16 @@ and the raw binary H.264 screen relay on `/screen`.
 ## Why two vhosts and not one path split
 
 The two products cannot share a socket process, so they cannot share a vhost
-either. `sessions` and `screenSessions` in `server.js` are keyed on `clientId`
-alone, and `clientId` is `client_unique_id` — an `int(11)` drawn from each
-product's own `clients` table, both sequences starting at 1. iShield client 42
-and iFilter client 42 would land in the same room, `session:42`, and the screen
-relay forwards source→sink with no product check.
+either. `JWT_SECRET` is one constant per process — used both to verify admin JWTs
+and as the literal device token — and the two dashboards sign with different
+secrets, so one process cannot serve both without merging their admin auth
+domains.
 
-`JWT_SECRET` is the second reason: one constant per process, used both to verify
-admin JWTs and as the literal device token, and the two dashboards sign with
-different secrets.
+Session namespace is a second, weaker reason: `sessions` and `screenSessions` are
+keyed on `clientId` alone and the relay forwards source→sink with no product
+check. `client_unique_id` is a random ~9-digit int rather than a sequence though,
+with measured overlap 0 on 2026-08-19, so that alone would not have forced the
+split.
 
 ## Standing up the iShield hostname
 
